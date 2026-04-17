@@ -187,7 +187,7 @@ def monitor_orca_jobs(conn, cur, job_dir, columns):
 #    job_id = result.stdout.strip().split()[-1]
 #    return job_id # Track slurm task by id
 #
-def submit_orca_array(inp_files, job_dir, BATCH_SIZE, cpus = 4, mem = 8000):
+def submit_orca_array(inp_files, job_dir, BATCH_SIZE, partition, cpus = 4, mem = 8000):
     
     #inp_stem = [Path(inp_file).stem for inp_file in inp_files]
     inp_files = [Path(inp_file) for inp_file in inp_files]
@@ -211,7 +211,7 @@ def submit_orca_array(inp_files, job_dir, BATCH_SIZE, cpus = 4, mem = 8000):
 #SBATCH --cpus-per-task=1
 #SBATCH --mem={mem}
 #SBATCH --time=10:00:00
-#SBATCH --partition=kemi1
+#SBATCH --partition={partition}
 #SBATCH --array=1-{array_len}%{max_parallel}
 ##SBATCH --nodelist=node236,node238,node237,node239
 #SBATCH --no-requeue
@@ -235,7 +235,7 @@ cd $SCRATCH
 /groups/kemi/julius/orca_6_1_0/orca $(basename $INPUT) --use-hwthread-cpus
 mkdir -p {job_dir}
 cp -v *.out *.err *.xyz *trj* {job_dir}/ 2>/dev/null || true
-""".format(job_name=batch_file.stem, mem=mem, cpus=cpus, job_dir=job_dir, batch_file=batch_file, array_len=array_len, max_parallel=max_parallel)
+""".format(job_name=batch_file.stem, mem=mem, cpus=cpus, job_dir=job_dir, batch_file=batch_file, array_len=array_len, max_parallel=max_parallel, partition=partition)
     slurm_filename.write_text(sbatch_script)
     result = subprocess.run(["sbatch", str(slurm_filename)],
                             capture_output=True, text=True)
@@ -349,7 +349,7 @@ def main(args):
         try:
             inp_files = [row[1] for row in rows]
     
-            job_id = submit_orca_array(inp_files, job_dir=OUT_DIR, BATCH_SIZE=BATCH_SIZE, cpus=args.cpus, mem=args.mem)
+            job_id = submit_orca_array(inp_files, job_dir=OUT_DIR, BATCH_SIZE=BATCH_SIZE, partition=args.partition, cpus=args.cpus, mem=args.mem)
             
             print(f"Submitted ORCA job {inp_files[0]}-{inp_files[-1]} as Slurm ID {job_id}", flush=True)
             
@@ -386,6 +386,7 @@ if __name__ == "__main__":
     parser.add_argument("--cpus", type=int, help="CPUs available for ORCA calculation (Make sure it is consistent with input file)", default=8)
     parser.add_argument("--mem", type=int, help="Memory available for ORCA calculation", default=20000)
     parser.add_argument("--batch_size", type=int, help="Number of parallel array calculations to run", default=100)
+    parser.add_argument("--partition", type=str, help="Partition", default="kemi1")
     args = parser.parse_args()
     print("Beginning", flush=True)
     
