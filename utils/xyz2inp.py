@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+
+import argparse
+from pathlib import Path
+
+
+def xyz_to_inp(file, charge, multiplicity, keep_lines, query, input_name, please_return=False):
+  with open(file, "r") as f:
+    txt = f.readlines()
+    txt = txt[int(keep_lines):] #skipfirst two lines
+    txt = "".join(txt)
+    # query = f"!r2scan-3c opt freq \n \n * XYZ {args.charge} {args.multiplicity} \n"
+    buffer = f"\n \n* XYZ {int(charge)} {int(multiplicity)} \n"
+    inp = query + buffer + txt + f"*"
+
+    xyz_path = Path(file)
+    input_name = Path(input_name).name
+    out = Path(input_name) / f"{xyz_path.stem}.inp"
+    print(f"Wrote {out} :-)", flush=True)
+    out.write_text(inp)
+    if please_return == True:
+        return out
+def split_xyzs(filename):
+    with open(filename, "r") as f:
+        lines = [line.strip() for line in f if line.strip()]
+    name_list = []
+    i = 0
+    structure_idx = 1
+
+    while i < len(lines):
+        # Check if the line is an integer (natoms flag)
+        if lines[i].isdigit():
+            natoms = int(lines[i])
+            start = i + 1
+            end = start + natoms
+
+            if end > len(lines):
+                raise ValueError(f"Not enough atom lines after natoms={natoms}")
+
+            atoms = lines[start:end]
+            filename = Path(filename)
+            outname = f"{filename.stem}struct_{structure_idx}.xyz"
+            name_list.append(outname)
+            with open(outname, "w") as out:
+                out.write(f"{natoms}\n")
+                out.write(f"Structure {structure_idx}\n")
+                out.write("\n".join(atoms) + "\n")
+
+            structure_idx += 1
+            i = end
+        else:
+            i += 1  # skip lines until we hit a natoms flag
+    return name_list
+
+def xyzs_to_inp(filename, charge, multiplicity, ncpus, mem, input_name, keep_lines=2, query = f"!r2scan-3c opt freq \n%pal \nnprocs 8 \nend \n%maxcore {int(20000*0.75)}"):
+    name_list = split_xyzs(filename)
+    inps = []
+    for n in name_list:
+        inp = xyz_to_inp(n, charge, multiplicity, input_name=input_name, keep_lines=keep_lines, query=query, please_return=True)
+        inps.append(inp)
+        Path(n).unlink()
+    print(filename, " made inps:", inps)
+    return inps
+
+
+def main():
+    '''
+    Operates in given directory, converting all .xyz files to the desired custom .inp file
+    for use with Orca or similar programs.
+
+    Using the parser, any custom arguments can be added, and lines can also be removed.
+    '''
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+            "xyz_files",
+            nargs="+",
+            help = "Input XYZ files; one or more"
+            )
+    parser.add_argument(
+            "--header",
+            default = "!r2scan-3c opt freq",
+            help ="Orca header line. Default is optimization and frequency calculation using r2scan-3c"
+            )
+    parser.add_argument(
+            "--keep_lines",
+            default = 2,
+            help = """When processing the .xyz file it is often desired to remove the first two lines, as they contain
+            artifacts unrelated to the .inp file. Therefore, use this to remove as many lines as necessary."""
+            )
+    parser.add_argument(
+            "--charge",
+            default = 0,
+            help = "Molecular charge"
+            )
+    parser.add_argument(
+            "--multiplicity",
+            default = 1,
+            help = "Multiplicity of molecule - 2S+1 (S = charge)"
+            )
+
+
+
+
+
+
+    args = parser.parse_args()
+
+    for file in args.xyz_files:
+        if file[-4:] == ".xyz":
+          xyz_to_inp(file, args.charge, args.multiplicity, args.keep_lines, args.header)
+        if file[-5:] == ".xyzs":
+          name_list = split_xyzs(file)
+          for n in name_list:
+            xyz_to_inp(n, args.charge, args.multiplicity, args.keep_lines, args.header)
+            Path(n).unlink()
+
+
+if __name__=="__main__":
+    main()
