@@ -10,7 +10,7 @@ import time
 
 ### FUNCTIONS
 def is_job_running(slurm_job_id):
-    result = subprocess.run(["sacct", "-j", str(slurm_job_id), "--format=JobID,State", "-X", "-n"], capture_output=True, text=True)
+    result = subprocess.run(["sacct", "-j", str(slurm_job_id), "--format=JobID,State","--array",  "-X", "-n"], capture_output=True, text=True)
     
     lines = result.stdout.strip().splitlines()
 
@@ -21,16 +21,19 @@ def is_job_running(slurm_job_id):
         if len(parts) < 2:
             continue
         job_id, state = parts[0], parts[1]
+      #  print("job_id", job_id, "state", state, flush=True)
         if job_id.endswith((".batch", ".extern")):
             continue
-        if state in ["PREEMPTED", "DEADLINE", "FAILED", "CANCELLED", "BOOT_FAIL", "NODE_FAIL", "OUT_OF_MEMORY", "SUSPENDED", "TIMEOUT"]:
+        if any(s in state for s in ["PREEMPTED", "DEADLINE", "FAILED", "CANCELLED", "BOOT_FAIL", "NODE_FAIL", "OUT_OF_MEMORY", "SUSPENDED", "TIMEOUT"]):
             states[job_id] = "FAIL"
+            print("FAIL", state, flush=True)
         elif state == "RUNNING":
             states[job_id] = "IN_PROCESS"
         elif state == "PENDING":
             states[job_id] = "PENDING"
         elif state == "COMPLETED":
             states[job_id] = "COMPLETED"
+            print("COMPLETED", state, flush=True)
         else:
             states[job_id] = "FAIL"
     return states
@@ -70,9 +73,16 @@ def monitor_orca_jobs(conn, cur, job_dir, columns):
  #           else:
             state = states.get(full_task_id, "UNKNOWN")
 
+            if state == "UNKNOWN":
+                new_state = states.get(slurm_job_id, "UNKNOWN")
+                if new_state != "UNKNOWN" and new_state != None:
+                    state = new_state
+
+            print("job_id", db_id, "state", state, flush=True)
             if state == 'PENDING' or state == 'IN_PROCESS':
                 continue 
             if state == 'FAIL':
+                print("Failed", db_id, flush=True)
                 cur.execute("""
                             UPDATE jobs
                             SET status='error', error='Slurm Error'
@@ -82,8 +92,20 @@ def monitor_orca_jobs(conn, cur, job_dir, columns):
                 continue
             if state == "COMPLETED":
                 if not out_file.exists():
-                    #print(f"waiting for {out_file}", flush=True)
+                    
+                    #k += 1
+                    #if k > 5:
+                    time.sleep(10)
+                if not out_file.exists():
+                    print("Couldn't find output file", flush=True)
+                    cur.execute("""
+                                UPDATE jobs
+                                SET status='error', error='Output_not_found'
+                                WHERE id=?
+                                """, (db_id,))
+                    conn.commit()
                     continue
+                    
                 out_text = out_file.read_text(errors="ignore")
                 if "ORCA TERMINATED NORMALLY" not in out_text:
                     if "Error TMatrixContainers::AddMatrix" in out_text:
