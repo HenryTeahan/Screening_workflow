@@ -21,7 +21,7 @@ def is_job_running(slurm_job_id):
         if len(parts) < 2:
             continue
         job_id, state = parts[0], parts[1]
-      #  print("job_id", job_id, "state", state, flush=True)
+        #print("job_id", job_id, "state", state, flush=True)
         if job_id.endswith((".batch", ".extern")):
             continue
         if any(s in state for s in ["PREEMPTED", "DEADLINE", "FAILED", "CANCELLED", "BOOT_FAIL", "NODE_FAIL", "OUT_OF_MEMORY", "SUSPENDED", "TIMEOUT"]):
@@ -33,19 +33,20 @@ def is_job_running(slurm_job_id):
             states[job_id] = "PENDING"
         elif state == "COMPLETED":
             states[job_id] = "COMPLETED"
-            print("COMPLETED", state, flush=True)
+#            print("COMPLETED", state, flush=True)
         else:
             states[job_id] = "FAIL"
     return states
         
-def monitor_orca_jobs(conn, cur, job_dir, columns):
+def monitor_orca_jobs(conn, cur, job_dir, columns, tracker):
+
     cur.execute("""
                 SELECT id, inp_file, slurm_job_id, slurm_task_id, error
                 FROM jobs
                 WHERE status='orca_sp_submitted'
                 """)
     rows = cur.fetchall()
-    
+    print("Number of submitted tasks:", len(rows), flush=True) 
     if not rows:
         print("No submitted sp orca tasks yet, take a nap!!", flush=True)
         return
@@ -59,156 +60,121 @@ def monitor_orca_jobs(conn, cur, job_dir, columns):
             grouped[slurm_job_id] = []
 
         grouped[slurm_job_id].append(row)
-        
-    for slurm_job_id, group_rows in grouped.items():
-        
-        states = is_job_running(slurm_job_id)
-        for db_id, inp_file, slurm_job_id, task_id, error in group_rows:
-            inp_path = Path(inp_file)
-            out_file = job_dir / inp_path.name.replace(".inp",".out")
-            err_file = job_dir / inp_path.name.replace(".inp",".err")
-            full_task_id = f"{slurm_job_id}_{task_id}"
-#            if task_id=="":
- #               state = states.get(slurm_job_id, "UNKNOWN")
- #           else:
-            state = states.get(full_task_id, "UNKNOWN")
+    try:        
+        for slurm_job_id, group_rows in grouped.items():
+            
+            states = is_job_running(slurm_job_id)
+            for db_id, inp_file, slurm_job_id, task_id, error in group_rows:
+                inp_path = Path(inp_file)
+                out_file = job_dir / inp_path.name.replace(".inp",".out")
+                err_file = job_dir / inp_path.name.replace(".inp",".err")
+                full_task_id = f"{slurm_job_id}_{task_id}"
+    #            if task_id=="":
+     #               state = states.get(slurm_job_id, "UNKNOWN")
+     #           else:
+                
+                state = states.get(full_task_id, "UNKNOWN")
+                print(full_task_id, state, flush=True)
 
-            if state == "UNKNOWN":
-                new_state = states.get(slurm_job_id, "UNKNOWN")
-                if new_state != "UNKNOWN" and new_state != None:
-                    state = new_state
+                if state == "UNKNOWN":
+                    new_state = states.get(slurm_job_id, "UNKNOWN")
+                    if new_state != "UNKNOWN" and new_state != None:
+                        state = new_state
+                        print("Used new state",db_id,slurm_job_id,task_id, flush=True)
 
-            print("job_id", db_id, "state", state, flush=True)
-            if state == 'PENDING' or state == 'IN_PROCESS':
-                continue 
-            if state == 'FAIL':
-                print("Failed", db_id, flush=True)
-                cur.execute("""
-                            UPDATE jobs
-                            SET status='error', error='Slurm Error'
-                            where id = ?
-                            """, (db_id,))
-                conn.commit()
-                continue
-            if state == "COMPLETED":
-                if not out_file.exists():
-                    
-                    #k += 1
-                    #if k > 5:
-                    time.sleep(10)
-                if not out_file.exists():
-                    print("Couldn't find output file", flush=True)
+                #print("job_id", db_id, "state", state, flush=True)
+                if state == 'PENDING' or state == 'IN_PROCESS':
+                    print("state pending", db_id, state, inp_file, flush=True)
+                    continue 
+                if state == 'FAIL':
+                    print("Failed", db_id, flush=True)
                     cur.execute("""
                                 UPDATE jobs
-                                SET status='error', error='Output_not_found'
-                                WHERE id=?
+                                SET status='error', error='Slurm Error'
+                                where id = ?
                                 """, (db_id,))
                     conn.commit()
-                    continue
                     
-                out_text = out_file.read_text(errors="ignore")
-                if "ORCA TERMINATED NORMALLY" not in out_text:
-                    if "Error TMatrixContainers::AddMatrix" in out_text:
+                    
+                if state == "COMPLETED":
+                    print("Completed - ", db_id,slurm_job_id, task_id, flush=True)
+                    if not out_file.exists():
+                        tracker[db_id] = tracker.get(db_id, 0) + 1
+                        print("n_attempts", tracker.get(db_id, 0)+1)
+                        if tracker[db_id] > 10:
+                            print("Couldn't find output file", flush=True)
+                            cur.execute("""
+                                        UPDATE jobs
+                                        SET status='error', error='Output_not_found'
+                                        WHERE id=?
+                                        """, (db_id,))
+                            conn.commit()
+                            continue
+                        else:
+                            print("Retrying", flush=True)
+                        continue
+                        
+                    out_text = out_file.read_text(errors="ignore")
+                    if "ORCA TERMINATED NORMALLY" not in out_text:
+                        if "Error TMatrixContainers::AddMatrix" in out_text:
+                            cur.execute("""
+                                        UPDATE jobs SET status='error', error='Error TMatrixContainers (Memory)'
+                                        WHERE id = ?
+                                        """, (db_id,))
+                            conn.commit()
+                            continue
+                        elif "multiplicity (1) is odd" in out_text:
+                            cur.execute("""
+                                        UPDATE jobs SET status='error', error='Multiplicity error'
+                                        WHERE id= ?
+                                        """, (db_id,))
+                            conn.commit()
+                            continue
+                        else:
+                            print(f"Orca failed :-( {inp_file}")
+                            cur.execute("""
+                                    UPDATE jobs
+                                    SET status='error', error='orca_sp_error'
+                                    WHERE id = ?
+                                    """, (db_id,))
+                            conn.commit()
+                    try: #If no error and job complete
+                        print("Trying to extract SP energy", flush=True)
+                        df = extract_energy(out_file)
+                        print(df, flush=True)
+                        
+                        try:
+                            gibbs_free = df['Final Gibbs free energy'].iloc[0]
+                        except:
+                            gibbs_free = None
+                        try:
+                            sp_energy = df['FINAL SINGLE POINT ENERGY'].iloc[0] 
+                        except:
+                            sp_energy = None
+                        print("gibbs", gibbs_free, "sp", sp_energy, flush=True)
+                       
+
+                      # inp_file_new = Path(str(inp_file).replace("INPUT_SP", "INPUT"))
                         cur.execute("""
-                                    UPDATE jobs SET status='error', error='Error TMatrixContainers (Memory)'
+                                    UPDATE jobs
+                                    SET FreeEnergy = ?, 
+                                    SINGLEPOINT = ?,
+                                    status='orca_completed'
+                                    WHERE id = ?
+                                    """, (gibbs_free, sp_energy, db_id)) 
+                        conn.commit()
+                        continue        
+                    except Exception as e:
+                        cur.execute("""
+                                    UPDATE jobs
+                                    SET status="orca_sp_read_failed"
                                     WHERE id = ?
                                     """, (db_id,))
                         conn.commit()
-                        continue
-                    elif "multiplicity (1) is odd" in out_text:
-                        cur.execute("""
-                                    UPDATE jobs SET status='error', error='Multiplicity error'
-                                    WHERE id= ?
-                                    """, (db_id,))
-                        conn.commit()
-                        continue
-                    else:
-                        print(f"Orca failed :-( {inp_file}")
-                        cur.execute("""
-                                UPDATE jobs
-                                SET status='error', error='orca_sp_error'
-                                WHERE id = ?
-                                """, (db_id,))
-                        conn.commit()
-                try: #If no error and job complete
-                    print("Trying to extract SP energy", flush=True)
-                    df = extract_energy(out_file)
-                    print(df, flush=True)
-                    
-                    try:
-                        gibbs_free = df['Final Gibbs free energy'].iloc[0]
-                    except:
-                        gibbs_free = None
-                    try:
-                        sp_energy = df['FINAL SINGLE POINT ENERGY'].iloc[0] 
-                    except:
-                        sp_energy = None
-                    print("gibbs", gibbs_free, "sp", sp_energy, flush=True)
-                   
-
-                  # inp_file_new = Path(str(inp_file).replace("INPUT_SP", "INPUT"))
-                    cur.execute("""
-                                UPDATE jobs
-                                SET FreeEnergy = ?, 
-                                SINGLEPOINT = ?,
-                                status='orca_completed'
-                                WHERE id = ?
-                                """, (gibbs_free, sp_energy, db_id)) 
-                    conn.commit()
+                        print("Error in parsing", e, flush=True)
+    except Exception as e:
+        print("ERROR", e, flush=True)
         
-                except Exception as e:
-                    cur.execute("""
-                                UPDATE jobs
-                                SET status="orca_sp_read_failed"
-                                WHERE id = ?
-                                """, (db_id,))
-                    conn.commit()
-                    print("Error in parsing", e)
-#
-#def submit_orca(inp_file, job_dir, cpus = 4, mem = 8000):
-#    
-#    inp_stem = Path(inp_file).stem
-#    inp_file = Path(inp_file)
-#    slurm_filename = job_dir / f"submit_{inp_stem}.slurm"
-#    sbatch_script = f"""#!/bin/bash
-##SBATCH --job-name={Path(inp_file).stem}
-##SBATCH --nodes=1
-##SBATCH --ntasks={cpus}
-##SBATCH --cpus-per-task=1
-##SBATCH --mem={mem}
-##SBATCH --chdir=$SCRATCH
-##SBATCH --time=10:00:00
-##SBATCH --partition=kemi1
-###SBATCH --nodelist=node236,node238,node237,node239
-##SBATCH --no-requeue
-#
-##Move to scratch dir for calculations
-#
-#exec > >(tee -a $SCRATCH/{inp_file.name.replace(".inp", ".out")})
-#exec 2> >(tee -a $SCRATCH/{inp_file.name.replace(".inp", ".err")})
-#
-#export PATH=/groups/kemi/julius/orca_6_1_0:$PATH
-#export LD_LIBRARY_PATH=/groups/julius/orca_6_1_0:$LD_LIBRARY_PATH
-#
-#export PATH=/software/kemi/openmpi/openmpi-4.1.1/bin:$PATH
-#export LD_LIBRARY_PATH=/software/kemi/openmpi/openmpi-4.1.1/lib:$LD_LIBRARY_PATH
-##module load mpi/openmpi-x86_64
-#cp $SLURM_SUBMIT_DIR/{inp_file} $SCRATCH
-#cd $SCRATCH
-#
-##/groups/kemi/hteahan/opt/orca_6_1_0_linux_x86-64_shared_openmpi418/orca {inp_file.name} --use-hwthread-cpus
-#/groups/kemi/julius/orca_6_1_0/orca {inp_file.name} --use-hwthread-cpus
-#
-#cp -v *.out *.err *.xyz *trj* {job_dir}/ 2>/dev/null || true
-#""".format(mem=mem, cpus=cpus, job_dir=job_dir, inp_file=inp_file)
-#    slurm_filename.write_text(sbatch_script)
-#    result = subprocess.run(["sbatch", str(slurm_filename)],
-#                            capture_output=True, text=True)
-#    if result.returncode != 0:
-#        raise RuntimeError(f"Failed to submit orca job: {result.stderr}")
-#    job_id = result.stdout.strip().split()[-1]
-#    return job_id # Track slurm task by id
-#
 def submit_orca_array(inp_files, job_dir, BATCH_SIZE, partition, cpus = 4, mem = 8000):
     
     #inp_stem = [Path(inp_file).stem for inp_file in inp_files]
@@ -268,33 +234,55 @@ cp -v *.out *.err *.xyz *trj* {job_dir}/ 2>/dev/null || true
     return job_id # Track slurm task by id
 
 def monitoring_thread(DB_PATH, job_dir, poll_interval=10):
-    thread_conn = sqlite3.connect(DB_PATH, timeout=60, check_same_thread=False)
+    thread_conn = sqlite3.connect(DB_PATH, timeout=poll_interval, check_same_thread=False)
     thread_conn.execute("PRAGMA journal_mode=WAL;")
     thread_conn.execute("PRAGMA synchronous=NORMAL;")
     thread_cur = thread_conn.cursor()
     thread_cur.execute("PRAGMA table_info(jobs)")
     columns = [info[1] for info in thread_cur.fetchall()]
+    tracker = {}
+  
     if 'FreeEnergy' not in columns:
         thread_cur.execute("ALTER TABLE jobs ADD COLUMN FreeEnergy REAL")
     if 'SINGLEPOINT' not in columns:
         thread_cur.execute("ALTER TABLE jobs ADD COLUMN SINGLEPOINT REAL")
     thread_conn.commit()
+    
+    
     while True: # Initially check whether anything relevant exists - either not running yet, or missing completion.
-        thread_cur.execute("""
-        SELECT COUNT(*)
-        FROM jobs
-        WHERE (inp_file IS NOT NULL AND job_type='SP' AND (status='pending' OR status='orca_sp_submitted')) 
-        """)
-    
-        pending = thread_cur.fetchone()[0]
+        print("monitoring thread running")
+        print(tracker, flush=True)
         
-        if pending == 0:
-            print("No more jobs pending, closing ...", flush=True)
-            break
+
+        try:
+            thread_cur.execute("""
+            SELECT COUNT(*)
+            FROM jobs
+            WHERE (inp_file IS NOT NULL AND job_type='SP' AND (status='pending' OR status='orca_sp_submitted')) 
+            """)
         
-        monitor_orca_jobs(thread_conn, thread_cur, job_dir, columns)  # monitoring completed and failed jobs
-        time.sleep(poll_interval)
-    
+            pending = thread_cur.fetchone()[0]
+         
+            if pending == 0:
+                print("No more jobs pending, sleeping ...", flush=True)
+                time.sleep(60)
+            
+            monitor_orca_jobs(thread_conn, thread_cur, job_dir, columns, tracker)  # monitoring completed and failed jobs
+            time.sleep(poll_interval)
+
+        except sqlite3.OperationalError as e:
+            if "database is locked" in str(e):
+                print("DB locked", flush=True)    
+                
+                #thread_conn = sqlite3.connecti(DB_PATH, timeout=60, check_same_thread=False)
+                thread_conn.rollback()
+                time.sleep(5)
+                continue
+            else:
+                print(e, flush=True)
+                break
+                
+            
     thread_conn.close()
 
 
@@ -326,7 +314,7 @@ def main(args):
 
     while True:
         # Throttler - allow only certain number of parallel tasks.
-
+        #cur.execute("""BEGIN IMMEDIATE""")
         cur.execute("""
         SELECT COUNT(*)
         FROM jobs
@@ -340,11 +328,29 @@ def main(args):
             print("Too many tasks running, sleeping...", running_tasks, flush=True)
             time.sleep(20)
             continue
+        
+        cur.execute("""
+        SELECT COUNT(*)
+        FROM jobs
+        WHERE job_type='SP' and status='pending'
+        """)
+        
+        pending = cur.fetchone()[0]
+
+        print("Pending tasks", pending, flush=True)
+        if pending == 0:
+            if running_tasks == 0:
+                print("No pending or running tasks, quitting...", flush=True)
+                break
+            print("No pending tasks, sleeping...", flush=True)
+            time.sleep(20)
+            continue
+
+
 
         # Reworked to work as array process
         BATCH_SIZE = args.batch_size # args.batch_size
-        
-        cur.execute("BEGIN IMMEDIATE;")
+        # BEGIN IMMEDIATE - TODO
         cur.execute(f"""
         UPDATE jobs
         SET status='orca_claimed'
@@ -360,7 +366,8 @@ def main(args):
         rows = cur.fetchall()
         
         if not rows:
-            time.sleep(5) #Wait
+            conn.rollback()
+            time.sleep(10) #Wait
             continue
         
         #for row in rows:

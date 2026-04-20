@@ -4,90 +4,114 @@ import argparse
 import sqlite3
 import json
 from pathlib import Path
+import multiprocessing
+from multiprocessing import Pool
+import os
+import time
 ### END
 
 
 ### FUNCTIONS
-def main(args):
-    DB_PATH = Path(args.DB_PATH)
-    INP_DIR = Path(args.INP_DIR)
-    INP_DIR.mkdir(parents=True, exist_ok=True)
-    EMBED_DIR = Path(args.EMBED_DIR)
-    conn = sqlite3.connect(DB_PATH, timeout=30)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA busy_timeout = 30000;")
+def select_create(conn, args):
     cur = conn.cursor()
-    print(f"Connection to DB made {DB_PATH}, {INP_DIR}", flush=True)
+    cur.execute("""BEGIN IMMEDIATE""")
     
-    while True:
-       cur.execute("""
+    cur.execute("""
                 UPDATE jobs
                 SET status='inputting'
+
                 WHERE id = (
                     SELECT id
                     FROM jobs
                     WHERE job_type='SP'
                     AND status='orca_completed'
                     AND SINGLEPOINT is not null
-                    order by SINGLEPOINT ASC, ligand_id ASC, id ASC
+                    AND ligand_id NOT in (
+                        SELECT ligand_id FROM jobs WHERE status='inputting'
+                )
+                    order by ligand_id ASC, SINGLEPOINT ASC, id ASC
                     LIMIT 1)
                 RETURNING id, xyz_file, ligand_id, SINGLEPOINT
                 """)
-        row = cur.fetchone()
-        
-        if row is None:
-            time.sleep(5)
-            continue
+    
+    row = cur.fetchone()
+    
+    if row is None:
+        time.sleep(5)
+        conn.rollback()
+        return
 
-        conn.commit()
-
-
+    conn.commit()
+    
+    try:
+    
         job_id, xyz_file, ligand_id, SP_E = row
+        xyzsfilepath = Path(args.EMBED_DIR) / xyz_file
 
-        xyzsfilepath = EMBED_DIR / xyz_file
-        
         charge, multiplicity = args.charge, args.multiplicity
-      
-        try:
-            inp_file = xyz_to_inp(
-                str(xyzsfilepath),
-                charge,
-                multiplicity,
-                input_name=str(INP_DIR),
-                keep_lines=2,
-                query=f"{args.query} \n%pal \nnprocs {args.cpus} \nend \n%maxcore {int(args.mem/args.cpus*0.75)}",
-                please_return=True
-            )
+    
+    
+        inp_file = xyz_to_inp(str(xyzsfilepath),
+                                    charge,
+                                    multiplicity,
+                                    input_name=str(args.INP_DIR),
+                                    keep_lines=2,
+                                    query=f"{args.query} \n %pal \nprocs {args.cpus} \nend \n%maxcore {int(args.mem/args.cpus*0.75)}",
+                                    please_return=True
+                            )
 
-            print(inp_file, flush=True)
+        if not inp_file:
+            raise RuntimeError("No ORCA input files generated")
+        
+        cur.execute("""
+                    UPDATE jobs
+                    SET status='inputs_created', job_type='OPT'
+                    WHERE id=?
+                    """,
+                    (job_id,))
+        conn.commit()
+    
+    except Exception as e:
+    
+        conn.rollback()
 
-            if not inp_file:
-                raise RuntimeError("No ORCA input files generated")
+        print("Error in INP FILE generation", e, flush=True)
+        if job_id is not None:
+            try:
+                cur.execute("""
+                            UPDATE jobs
+                            SET status='input_gen_failed', error=?
+                            WHERE id=?
+                            """, 
+                            (str(e), job_id,))
+                conn.commit()
+            except Exception as e:
+                print("FAILED TO MARK JOB AS FAILED", e, flush=True)
+                return
+     
 
-            # Update job after input generation
-            cur.execute("""
-                UPDATE jobs
-                SET status='inputs_created', job_type='OPT'
-                WHERE id=?
-            """, (job_id,))
-            conn.commit()
-            continue
+def worker(args):
+    conn = sqlite3.connect(args.DB_PATH, timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA busy_timeout = 30000;")
+    
+    while True:
+        select_create(conn, args)
+    
 
-        except Exception as e:
-            conn.rollback()
-            
-            print("Error in INP FILE generation:", e, flush=True)
-            if xyz_file is not None and ligand_id is not None:
-                try:
-                    cur.execute("""
-                        UPDATE jobs
-                        SET status='input_gen_failed'
-                        WHERE xyz_file=? AND ligand_id=?
-                    """, (str(xyz_file), ligand_id))
-                    conn.commit()
-                except:
-                    conn.rollback()
-            continue
+
+def main(args):
+    DB_PATH = Path(args.DB_PATH)
+    INP_DIR = Path(args.INP_DIR)
+    INP_DIR.mkdir(parents=True, exist_ok=True)
+    
+    n_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", 1))
+    print("Running using", n_cpus, " CPUS")
+    pool = Pool(processes=n_cpus)
+    
+    with pool as p:
+        _ = p.map(worker, [args])
+    
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
