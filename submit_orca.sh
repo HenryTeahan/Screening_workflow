@@ -8,5 +8,6 @@
 #SBATCH --time=96:00:00
 #SBATCH --output=logs/inp_%A_%a_orca.out
 #SBATCH --error=logs/inp_%A_%a_orca.err
-micromamba run -n Complex python ../scripts/utils/submit_orca.py --DB_PATH "$PWD/db/jobs.db" --INP_DIR "$PWD/INPUT" --OUT_DIR "$PWD/Output" --cpus 4 --mem 8000
+
+micromamba run -n Complex python utils/submit_orca.py --DB_PATH "$PWD/db/jobs.db" --INP_DIR "$PWD/INPUT" --OUT_DIR "$PWD/Output" --cpus 4 --mem 8000
 

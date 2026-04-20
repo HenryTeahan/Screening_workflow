@@ -22,7 +22,7 @@ def main(args):
     conn.execute("PRAGMA synchronous=NORMAL;") # NOTE: Allows for writing from both monitoring thread & main concurrently using Wriet-Ahead-Logging
     cur = conn.cursor()
 
-    # Create fields:
+    # Create fields:TODO implement update of time...
     cur.execute("""
     CREATE TABLE IF NOT EXISTS jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,7 +39,7 @@ def main(args):
     status TEXT NOT NULL,
     slurm_job_id TEXT,
     error TEXT,
-
+    SINGLEPOINT REAL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );

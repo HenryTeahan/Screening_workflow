@@ -238,17 +238,9 @@ def monitoring_thread(DB_PATH, job_dir, poll_interval=10):
     thread_conn.execute("PRAGMA journal_mode=WAL;")
     thread_conn.execute("PRAGMA synchronous=NORMAL;")
     thread_cur = thread_conn.cursor()
-    thread_cur.execute("PRAGMA table_info(jobs)")
-    columns = [info[1] for info in thread_cur.fetchall()]
+    
     tracker = {}
-  
-    if 'FreeEnergy' not in columns:
-        thread_cur.execute("ALTER TABLE jobs ADD COLUMN FreeEnergy REAL")
-    if 'SINGLEPOINT' not in columns:
-        thread_cur.execute("ALTER TABLE jobs ADD COLUMN SINGLEPOINT REAL")
-    thread_conn.commit()
-    
-    
+
     while True: # Initially check whether anything relevant exists - either not running yet, or missing completion.
         print("monitoring thread running")
         print(tracker, flush=True)

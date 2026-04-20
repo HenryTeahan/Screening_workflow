@@ -16,5 +16,5 @@ export MKL_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export NUMEXPR_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
 mkdir -p logs
-python ../../scripts/utils/embed_worker.py --DB_PATH "$PWD/db/jobs.db" --EMBED_DIR "$PWD/Embed" --N_tries 25
+micromamba run -n Complex python utils/embed_worker.py --DB_PATH "$PWD/db/jobs.db" --EMBED_DIR "$PWD/Embed" --N_tries 25
 

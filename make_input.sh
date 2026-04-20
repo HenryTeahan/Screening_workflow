@@ -14,4 +14,5 @@ export OPENBLAS_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export MKL_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export NUMEXPR_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
-micromamba run -n Complex python ../scripts/utils/make_input.py --DB_PATH "$PWD/db/jobs.db" --INP_DIR "$PWD/INPUT" --EMBED_DIR "$PWD/Embed" --query "!r2scan-3c smd(thf) OPT FREQ" --mem 8000 --cpus 4
+micromamba run -n Complex python utils/make_input.py --DB_PATH "$PWD/db/jobs.db" --INP_DIR "$PWD/INPUT" --EMBED_DIR "$PWD/Embed" --query "!r2scan-3c smd(thf) OPT FREQ" --mem 8000 --cpus 4
+

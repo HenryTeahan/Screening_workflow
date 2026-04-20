@@ -8,5 +8,5 @@
 #SBATCH --time=240:00:00
 #SBATCH --output=logs/inp_%A_%a_orca.out
 #SBATCH --error=logs/inp_%A_%a_orca.err
-python ../../scripts/utils/submit_sp_orca.py --DB_PATH "$PWD/db/jobs.db" --INP_DIR "$PWD/INPUT_SP" --OUT_DIR "$PWD/Output_SP" --cpus 4 --mem 4000 --batch_size 200
+python utils/submit_sp_orca.py --DB_PATH "$PWD/db/jobs.db" --INP_DIR "$PWD/INPUT_SP" --OUT_DIR "$PWD/Output_SP" --cpus 4 --mem 4000 --batch_size 200
 
